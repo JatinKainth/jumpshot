@@ -63,7 +63,7 @@ All screens are data-driven off registries (`LEVELS`, future `CHARACTERS`,
       platform map rendered from `shared/maps.ts`; typecheck + build green.
 - [x] **M1 – netplay movement**: WS server, fixed-step loop, input/snapshot
       protocol, interpolation; see the other player move and jump.
-- [ ] **M2 – combat**: gun spawner (3s cadence, cap 3), pickup, bullets,
+- [x] **M2 – combat**: gun spawner (3s cadence, cap 3), pickup, bullets,
       kills, round/match FSM, HUD score.
 - [ ] **M3 – polish**: menu/lobby/selector screens, sprites + animations
       (Kenney), sound, juice.
