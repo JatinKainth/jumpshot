@@ -201,7 +201,7 @@ async function winRound(
     }
     if (attempt === 3) return { ok: false, seq };
     p2.ws.close();
-    await waitFor(() => latest(p1)?.ph === "wait", 3000);
+    await waitFor(() => latest(p1)?.ph === "wait", 3000).catch(() => {});
     await reopen(p2);
     victimId = p2.welcomes[0]!.id;
   }
@@ -234,6 +234,8 @@ async function armUp(
 
 function nearestFloorGun(gs: GunSnapshot[], me: PlayerSnapshot | undefined): number {
   const myY = me?.[2] ?? 218;
+  // Mid-floor gun spot on the player-spawn row (col 13 × TILE_SIZE + half);
+  // patrol target before any gun snapshot shows a floor-level pickup.
   let best = 216;
   let bestDist = Infinity;
   for (const [, gx, gy] of gs) {

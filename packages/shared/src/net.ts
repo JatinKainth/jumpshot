@@ -65,8 +65,8 @@ export type PlayerSnapshot = [
 /** [id, x, y] — gun lying on the ground, waiting for pickup. */
 export type GunSnapshot = [id: number, x: number, y: number];
 
-/** [id, x, y, vx, vy] */
-export type BulletSnapshot = [id: number, x: number, y: number, vx: number, vy: number];
+/** [id, x, y, vx] */
+export type BulletSnapshot = [id: number, x: number, y: number, vx: number];
 
 export type ClientMsg = InputMsg;
 export type ServerMsg = WelcomeMsg | SnapshotMsg;

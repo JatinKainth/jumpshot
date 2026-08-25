@@ -49,7 +49,7 @@ const STEP_MS = STEP_DT * 1000;
 const HISTORY_CAP = TICK_RATE_HZ * 3;
 // Bump when netcode-relevant client logic changes; shown in the debug HUD so
 // a stale page (missed vite reload) is obvious during testing.
-const NET_REV = "m2-combat";
+const NET_REV = "m2-combat.1";
 // Dead-reckon at most this far past the newest snapshot when the interp window
 // starves (jitter, GC pauses) instead of freezing the remote sprite on it.
 const EXTRAP_MAX_MS = 100;
@@ -85,7 +85,7 @@ export class GameScene extends Phaser.Scene {
   private iAmArmed = false;
   /** Local ammo estimate, decremented per trigger pull, resynced per snapshot. */
   private iAmAmmo = 0;
-  private prevFireDown = false;
+  private lastPredictFireAt = -Infinity;
   private gunSprites = new Map<number, Phaser.GameObjects.Image>();
   private bulletSprites = new Map<number, Phaser.GameObjects.Image>();
   private bulletBuf = new Map<number, TrackedEntity>();
@@ -206,7 +206,7 @@ export class GameScene extends Phaser.Scene {
       this.bitsChangedAt = time;
       this.releaseDivPx = 0;
     }
-    this.trackFireEdge(bits);
+    this.predictFire(bits, time);
 
     // Pace off the raw rAF timestamp, not Phaser's delta: smoothDelta clamps
     // to 16.67ms when unfocused / in post-focus cooldown, which on 120Hz
@@ -239,12 +239,15 @@ export class GameScene extends Phaser.Scene {
     if (this.debug) this.flushDebug(time, delta);
   }
 
-  private trackFireEdge(bits: number): void {
-    const fireDown = (bits & INPUT.FIRE) !== 0;
-    const pulled = fireDown && !this.prevFireDown;
-    this.prevFireDown = fireDown;
+  /**
+   * Mirrors the server's fire gate (held-bit auto-fire behind cooldownTicks):
+   * fast clicks inside the cooldown are suppressed here too instead of
+   * flashing / burning HUD ammo on shots the server drops, and holding FIRE
+   * keeps flashing at the server's cadence.
+   */
+  private predictFire(bits: number, time: number): void {
+    if (!(bits & INPUT.FIRE)) return;
     if (
-      !pulled ||
       !this.iAmArmed ||
       !this.iAmAlive ||
       this.phase !== "play" ||
@@ -253,6 +256,8 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.iAmAmmo <= 0) return;
+    if (time - this.lastPredictFireAt < PISTOL.cooldownTicks * STEP_MS) return;
+    this.lastPredictFireAt = time;
     this.iAmAmmo--;
     this.updateAmmoHud();
     const flash = this.add.image(

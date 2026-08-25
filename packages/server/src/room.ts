@@ -176,7 +176,6 @@ export class Room {
       round(b.x),
       round(b.y),
       round(b.vx),
-      0,
     ]);
     return {
       t: "snapshot",
@@ -239,6 +238,11 @@ export class Room {
     if (this.tick % SNAP_EVERY === 0) this.broadcast(this.snapshot());
   }
 
+  /**
+   * Only count/rend/mend are timed; play has no clock — it ends via
+   * resolveKills. Ticks landing here during play (phaseEndsAt already
+   * elapsed) intentionally no-op.
+   */
   private advancePhase(): void {
     if (this.phase === "count") this.enterPhase("play");
     else if (this.phase === "rend") {
@@ -388,6 +392,9 @@ export class Room {
     const w = draw ? -1 : aliveIds[0]!;
     this.winner = w;
     if (!draw) this.pips[w] = (this.pips[w] ?? 0) + 1;
+    // Round decided — drop in-flight bullets so they don't hang frozen
+    // mid-air on the scoreboard for the whole rend/mend duration.
+    this.bullets = [];
     if (!draw && this.pips[w]! >= WINS_TO_TAKE_MATCH) this.enterPhase("mend");
     else this.enterPhase("rend");
   }
