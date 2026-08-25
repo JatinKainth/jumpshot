@@ -11,7 +11,7 @@ See [PLAN.md](./PLAN.md) for the full design and roadmap.
 | ---------------- | ----- |
 | M0 local shell   | ✅ done |
 | M1 netplay       | ✅ done |
-| M2 combat        | ⬜ not started |
+| M2 combat        | ✅ done |
 | M3 polish        | ⬜ not started |
 
 M0: controllable square on a static platform map, rendered from shared level
@@ -20,6 +20,13 @@ data.
 M1: authoritative WS server simulating both players at 60Hz. Clients send input
 bitmasks on change, predict their own player locally (reconciled against
 snapshots), and interpolate the remote player ~50ms behind.
+
+M2: pistols spawn every 3s at random free spawnpoints (cap 3 on map). Pick up
+by overlap, fire with click/space; bullets are server-simulated with substep
+integration so they can't tunnel through walls. 1 life per round, round ends
+on a death (simultaneous kill = draw + replay), first to 2 wins takes the
+match — countdown/round-end/match-end phases drive a scoreboard overlay and
+HUD round pips.
 
 ## Run
 
