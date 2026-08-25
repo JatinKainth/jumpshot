@@ -28,6 +28,23 @@ export class BootScene extends Phaser.Scene {
       g.fillStyle(0x1a1c2c, 1);
       g.fillRect(2, 2, 3, 3);
       g.generateTexture("player2", PLAYER_SIZE, PLAYER_SIZE);
+
+      g.clear();
+      g.fillStyle(0xf7b32b, 1);
+      g.fillRect(0, 0, 8, 5);
+      g.fillStyle(0x1a1c2c, 1);
+      g.fillRect(5, 1, 3, 2);
+      g.generateTexture("gun", 8, 5);
+
+      g.clear();
+      g.fillStyle(0xffe066, 1);
+      g.fillRect(0, 0, 4, 2);
+      g.generateTexture("bullet", 4, 2);
+
+      g.clear();
+      g.fillStyle(0xffffff, 1);
+      g.fillRect(0, 0, 6, 6);
+      g.generateTexture("flash", 6, 6);
       g.destroy();
     }
 

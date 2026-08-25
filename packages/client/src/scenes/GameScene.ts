@@ -1,15 +1,25 @@
 import Phaser from "phaser";
 import {
+  GAME_HEIGHT,
+  GAME_WIDTH,
   INPUT,
   INTERP_DELAY_MS,
   LEVELS,
+  MUZZLE_OFFSET_PX,
   STEP_DT,
   TICK_RATE_HZ,
   TILE_SIZE,
+  WINS_TO_TAKE_MATCH,
   Sim,
   parseLevel,
+  PISTOL,
 } from "@jumpshot/shared";
-import type { PlayerSnapshot, PlayerState, SnapshotMsg } from "@jumpshot/shared";
+import type {
+  Phase,
+  PlayerSnapshot,
+  PlayerState,
+  SnapshotMsg,
+} from "@jumpshot/shared";
 import { Hud } from "../hud";
 import { NetClient } from "../net";
 
@@ -25,13 +35,21 @@ interface RemoteSample {
 
 interface Remote {
   buffer: RemoteSample[];
+  alive: boolean;
+}
+
+interface TrackedEntity {
+  x: number;
+  y: number;
+  vx: number;
+  recvAt: number;
 }
 
 const STEP_MS = STEP_DT * 1000;
 const HISTORY_CAP = TICK_RATE_HZ * 3;
 // Bump when netcode-relevant client logic changes; shown in the debug HUD so
 // a stale page (missed vite reload) is obvious during testing.
-const NET_REV = "active-flood";
+const NET_REV = "m2-combat.1";
 // Dead-reckon at most this far past the newest snapshot when the interp window
 // starves (jitter, GC pauses) instead of freezing the remote sprite on it.
 const EXTRAP_MAX_MS = 100;
@@ -57,6 +75,23 @@ export class GameScene extends Phaser.Scene {
   private remotes = new Map<number, Remote>();
   private sprites = new Map<number, Phaser.GameObjects.Image>();
   private hud = new Hud();
+
+  // --- M2 combat state (all mirrored off snapshots) ---
+  private phase: Phase = "wait";
+  private phaseLeftTicks = 0;
+  private winner = -1;
+  private pips: Record<number, number> = {};
+  private iAmAlive = true;
+  private iAmArmed = false;
+  /** Local ammo estimate, decremented per trigger pull, resynced per snapshot. */
+  private iAmAmmo = 0;
+  private lastPredictFireAt = -Infinity;
+  private gunSprites = new Map<number, Phaser.GameObjects.Image>();
+  private bulletSprites = new Map<number, Phaser.GameObjects.Image>();
+  private bulletBuf = new Map<number, TrackedEntity>();
+  private centerText!: Phaser.GameObjects.Text;
+  private pipText!: Phaser.GameObjects.Text;
+  private ammoText!: Phaser.GameObjects.Text;
 
   private readonly debug = new URLSearchParams(window.location.search).has("debug");
   private readonly traceEnabled = new URLSearchParams(window.location.search).has("trace");
@@ -99,6 +134,25 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    const style: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: "ui-monospace, Menlo, monospace",
+      color: "#ffffff",
+      stroke: "#1a1c2c",
+      strokeThickness: 4,
+    };
+    this.centerText = this.add
+      .text(GAME_WIDTH / 2, 110, "", { ...style, fontSize: "24px" })
+      .setOrigin(0.5, 0.5)
+      .setResolution(2);
+    this.pipText = this.add
+      .text(GAME_WIDTH / 2, 5, "", { ...style, fontSize: "12px" })
+      .setOrigin(0.5, 0)
+      .setResolution(2);
+    this.ammoText = this.add
+      .text(8, GAME_HEIGHT - 18, "", { ...style, fontSize: "12px" })
+      .setOrigin(0, 1)
+      .setResolution(2);
+
     this.hud.set("connecting…");
 
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -128,6 +182,9 @@ export class GameScene extends Phaser.Scene {
       const mine = msg.ps.find((p) => p[0] === msg.id);
       if (mine) {
         this.local = snapshotToState(mine);
+        this.iAmAlive = mine[8] === 1;
+        this.iAmArmed = mine[9] === 1;
+        this.iAmAmmo = mine[10];
         this.localSprite = this.ensureSprite(msg.id);
       }
       for (const p of msg.ps) {
@@ -149,11 +206,18 @@ export class GameScene extends Phaser.Scene {
       this.bitsChangedAt = time;
       this.releaseDivPx = 0;
     }
+    this.predictFire(bits, time);
 
     // Pace off the raw rAF timestamp, not Phaser's delta: smoothDelta clamps
     // to 16.67ms when unfocused / in post-focus cooldown, which on 120Hz
     // displays doubles the step rate and desyncs prediction from the server.
-    if (this.lastFrameTime > 0) {
+    // Free roam in wait, full combat in play; frozen phases drop accumulated
+    // time instead of bursting through it on unfreeze (the server isn't
+    // stepping us there either).
+    const canAct = this.iAmAlive && this.local !== null && (this.phase === "play" || this.phase === "wait");
+    if (!canAct) {
+      this.stepAcc = 0;
+    } else if (this.lastFrameTime > 0) {
       const frameGap = time - this.lastFrameTime;
       if (frameGap > 500) {
         // Occluded tabs get no rAF at all while the server (holding the last
@@ -166,13 +230,49 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.lastFrameTime = time;
-    while (this.stepAcc >= STEP_MS) {
+    while (canAct && this.stepAcc >= STEP_MS) {
       this.stepAcc -= STEP_MS;
       this.predictStep(bits);
     }
     this.decayVisualOffset(delta / 1000);
-    this.render();
+    this.render(time);
     if (this.debug) this.flushDebug(time, delta);
+  }
+
+  /**
+   * Mirrors the server's fire gate (held-bit auto-fire behind cooldownTicks):
+   * fast clicks inside the cooldown are suppressed here too instead of
+   * flashing / burning HUD ammo on shots the server drops, and holding FIRE
+   * keeps flashing at the server's cadence.
+   */
+  private predictFire(bits: number, time: number): void {
+    if (!(bits & INPUT.FIRE)) return;
+    if (
+      !this.iAmArmed ||
+      !this.iAmAlive ||
+      this.phase !== "play" ||
+      !this.local
+    ) {
+      return;
+    }
+    if (this.iAmAmmo <= 0) return;
+    if (time - this.lastPredictFireAt < PISTOL.cooldownTicks * STEP_MS) return;
+    this.lastPredictFireAt = time;
+    this.iAmAmmo--;
+    this.updateAmmoHud();
+    const flash = this.add.image(
+      this.local.x + this.local.facing * MUZZLE_OFFSET_PX,
+      this.local.y,
+      "flash",
+    );
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      scaleX: 1.8,
+      scaleY: 1.8,
+      duration: 90,
+      onComplete: () => flash.destroy(),
+    });
   }
 
   private flushDebug(time: number, delta: number): void {
@@ -191,9 +291,15 @@ export class GameScene extends Phaser.Scene {
   private sampleBits(): number {
     const left = this.cursors.left.isDown || this.keysWASD.A.isDown;
     const right = this.cursors.right.isDown || this.keysWASD.D.isDown;
-    const jump =
-      this.cursors.up.isDown || this.keysWASD.W.isDown || this.cursors.space.isDown;
-    return (left ? INPUT.LEFT : 0) | (right ? INPUT.RIGHT : 0) | (jump ? INPUT.JUMP : 0);
+    const jump = this.cursors.up.isDown || this.keysWASD.W.isDown;
+    const fire =
+      this.cursors.space.isDown || this.input.activePointer?.isDown === true;
+    return (
+      (left ? INPUT.LEFT : 0) |
+      (right ? INPUT.RIGHT : 0) |
+      (jump ? INPUT.JUMP : 0) |
+      (fire ? INPUT.FIRE : 0)
+    );
   }
 
   private predictStep(bits: number): void {
@@ -210,6 +316,13 @@ export class GameScene extends Phaser.Scene {
     if (this.dbgLastSnapAt > 0) this.dbg.snapGapMs = now - this.dbgLastSnapAt;
     if (this.dbg.snapGapMs > this.dbg.maxSnapGapMs) this.dbg.maxSnapGapMs = this.dbg.snapGapMs;
     this.dbgLastSnapAt = now;
+
+    this.phase = msg.ph;
+    this.phaseLeftTicks = msg.left ?? 0;
+    this.winner = msg.win;
+    this.pips = msg.pip;
+    this.syncWorldUi();
+
     const seen = new Set<number>();
     for (const p of msg.ps) {
       seen.add(p[0]);
@@ -227,9 +340,96 @@ export class GameScene extends Phaser.Scene {
         this.sprites.delete(id);
       }
     }
+    this.syncGuns(msg.gs);
+    this.syncBullets(msg.bs, now);
+  }
+
+  /**
+   * Phase/pip/ammo overlays are pure functions of the newest snapshot, so they
+   * refresh here rather than in render() — keeps presentation of authoritative
+   * state in one place.
+   */
+  private syncWorldUi(): void {
+    this.hud.set(this.phase === "wait" ? "waiting for player 2…" : "");
+    this.pipText.setText(this.pipsText());
+    switch (this.phase) {
+      case "wait":
+        this.centerText.setText("");
+        break;
+      case "count":
+        this.centerText.setText(String(Math.ceil(this.phaseLeftTicks / TICK_RATE_HZ)));
+        break;
+      case "play":
+        this.centerText.setText("");
+        break;
+      case "rend":
+        this.centerText.setText(
+          this.winner < 0 ? "DRAW" : `PLAYER ${(this.winner ?? 0) + 1} TAKES THE ROUND`,
+        );
+        break;
+      case "mend":
+        this.centerText.setText(`PLAYER ${(this.winner ?? 0) + 1} WINS THE MATCH`);
+        break;
+    }
+    this.updateAmmoHud();
+  }
+
+  private pipsText(): string {
+    const ids = Object.keys(this.pips).map(Number).sort((a, b) => a - b);
+    if (ids.length < 2) return "";
+    const dots = (n: number) =>
+      "●".repeat(Math.min(n, WINS_TO_TAKE_MATCH)) +
+      "○".repeat(Math.max(0, WINS_TO_TAKE_MATCH - n));
+    return `P1 ${dots(this.pips[ids[0]!] ?? 0)}   ${dots(this.pips[ids[1]!] ?? 0)} P2`;
+  }
+
+  private updateAmmoHud(): void {
+    this.ammoText.setText(
+      this.iAmArmed && this.iAmAlive ? `${PISTOL.name} ${"•".repeat(Math.max(0, this.iAmAmmo))}` : "",
+    );
+  }
+
+  private syncGuns(gs: SnapshotMsg["gs"]): void {
+    const seen = new Set<number>();
+    for (const [id, x, y] of gs) {
+      seen.add(id);
+      let sprite = this.gunSprites.get(id);
+      if (!sprite) {
+        sprite = this.add.image(x, y, "gun");
+        this.gunSprites.set(id, sprite);
+      }
+      sprite.setPosition(x, y);
+    }
+    for (const id of [...this.gunSprites.keys()]) {
+      if (!seen.has(id)) {
+        this.gunSprites.get(id)!.destroy();
+        this.gunSprites.delete(id);
+      }
+    }
+  }
+
+  private syncBullets(bs: SnapshotMsg["bs"], now: number): void {
+    const seen = new Set<number>();
+    for (const [id, x, y, vx] of bs) {
+      seen.add(id);
+      this.bulletBuf.set(id, { x, y, vx, recvAt: now });
+      if (!this.bulletSprites.has(id)) {
+        this.bulletSprites.set(id, this.add.image(x, y, "bullet"));
+      }
+    }
+    for (const id of [...this.bulletSprites.keys()]) {
+      if (!seen.has(id)) {
+        this.bulletSprites.get(id)!.destroy();
+        this.bulletSprites.delete(id);
+        this.bulletBuf.delete(id);
+      }
+    }
   }
 
   private reconcile(snap: PlayerSnapshot, ackedSeq: number): void {
+    this.iAmAlive = snap[8] === 1;
+    this.iAmArmed = snap[9] === 1;
+    this.iAmAmmo = snap[10];
     if (!this.local) {
       this.local = snapshotToState(snap);
       this.localSprite ??= this.ensureSprite(snap[0]);
@@ -265,14 +465,16 @@ export class GameScene extends Phaser.Scene {
     this.visualOffset.x += this.local.x - corrected.x;
     this.visualOffset.y += this.local.y - corrected.y;
     this.local = corrected;
+    this.updateAmmoHud();
   }
 
   private pushRemoteSample(id: number, snap: PlayerSnapshot): void {
     let remote = this.remotes.get(id);
     if (!remote) {
-      remote = { buffer: [] };
+      remote = { buffer: [], alive: true };
       this.remotes.set(id, remote);
     }
+    remote.alive = snap[8] === 1;
     remote.buffer.push({ recvAt: performance.now(), snap });
     if (remote.buffer.length > 30) remote.buffer.shift();
     this.ensureSprite(id);
@@ -295,17 +497,22 @@ export class GameScene extends Phaser.Scene {
     if (Math.abs(this.visualOffset.y) < 0.25) this.visualOffset.y = 0;
   }
 
-  private render(): void {
-    if (this.local && this.localSprite) {
-      this.localSprite.setPosition(
-        this.local.x + this.visualOffset.x,
-        this.local.y + this.visualOffset.y,
-      );
-      this.localSprite.setFlipX(this.local.facing < 0);
+  private render(time: number): void {
+    if (this.localSprite) {
+      this.localSprite.setVisible(this.iAmAlive);
+      if (this.local && this.iAmAlive) {
+        this.localSprite.setPosition(
+          this.local.x + this.visualOffset.x,
+          this.local.y + this.visualOffset.y,
+        );
+        this.localSprite.setFlipX(this.local.facing < 0);
+      }
     }
     const renderAt = performance.now() - INTERP_DELAY_MS;
     for (const [id, remote] of this.remotes) {
       const sprite = this.sprites.get(id)!;
+      sprite.setVisible(remote.alive);
+      if (!remote.alive) continue;
       const pos = interpolate(remote.buffer, renderAt);
       if (pos.starveMs > 0) {
         this.dbg.starveMs = pos.starveMs;
@@ -316,6 +523,13 @@ export class GameScene extends Phaser.Scene {
       }
       sprite.setPosition(pos.x, pos.y);
       sprite.setFlipX(pos.facing < 0);
+    }
+    for (const [id, b] of this.bulletBuf) {
+      const sprite = this.bulletSprites.get(id);
+      if (!sprite) continue;
+      // Bullets fly straight — extrapolating beats interpolating here.
+      const dtMs = Math.min(time - b.recvAt, EXTRAP_MAX_MS);
+      sprite.setPosition(b.x + (b.vx * dtMs) / 1000, b.y);
     }
   }
 }

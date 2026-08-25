@@ -21,3 +21,18 @@ export const MAX_PLAYERS = 2;
 // ~130ms. Beyond this, the client is hidden/crashed — stop simulating its
 // held keys so an unfocused player doesn't run into a wall forever.
 export const INPUT_IDLE_TIMEOUT_MS = 500;
+
+// --- Combat / match flow ---
+export const COUNTDOWN_TICKS = 3 * TICK_RATE_HZ;
+export const ROUND_END_TICKS = 3 * TICK_RATE_HZ;
+export const MATCH_END_TICKS = 4 * TICK_RATE_HZ;
+export const WINS_TO_TAKE_MATCH = 2;
+export const GUN_SPAWN_EVERY_TICKS = 3 * TICK_RATE_HZ;
+// Cap counts ground guns AND guns held by players.
+export const MAX_GUNS_IN_PLAY = 3;
+export const PICKUP_RADIUS_PX = 10;
+export const MUZZLE_OFFSET_PX = PLAYER_SIZE / 2 + 2;
+export const BULLET_HALF = 2;
+// A pistol round covers ~8.7px/tick; substep integration so bullets can't hop
+// over a 12px player or clip through tile corners between ticks.
+export const BULLET_SUBSTEP_PX = 4;
