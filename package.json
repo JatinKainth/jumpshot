@@ -1,0 +1,15 @@
+{
+  "name": "jumpshot",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "cd packages/client && bun x --bun vite",
+    "server": "cd packages/server && bun run src/index.ts",
+    "build": "cd packages/client && bun x --bun vite build",
+    "preview": "cd packages/client && bun x --bun vite preview",
+    "typecheck": "bun x --bun tsc --noEmit -p packages/shared && bun x --bun tsc --noEmit -p packages/server && bun x --bun tsc --noEmit -p packages/client"
+  }
+}
