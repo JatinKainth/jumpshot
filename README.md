@@ -43,6 +43,15 @@ bun run typecheck   # tsc across shared + server + client
 bun run build       # production bundle in packages/client/dist
 ```
 
+### GitHub Pages
+
+The client is deployed to https://jatinkainth.github.io/jumpshot/ on every push
+to `main` (`.github/workflows/deploy.yml`). Pages serves only the static
+client — the authoritative WS server still has to run somewhere. Because
+`github.io` is HTTPS-only, browsers block `ws://` connections from it, so the
+deployed page can't reach a LAN server; play over Pages becomes possible once
+the server is hosted behind `wss://` (see M4 in [PLAN.md](./PLAN.md)).
+
 ## Controls
 
 - Move: `A`/`D` or `←`/`→`
