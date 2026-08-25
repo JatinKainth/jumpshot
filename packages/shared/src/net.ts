@@ -2,9 +2,16 @@ export const INPUT = {
   LEFT: 1 << 0,
   RIGHT: 1 << 1,
   JUMP: 1 << 2,
+  FIRE: 1 << 3,
 } as const;
 
 export type WireValue = number | string | boolean;
+
+/**
+ * Match lifecycle, driven entirely by the server:
+ * wait (free roam, <2 players) → count → play ⇄ rend → mend → count …
+ */
+export type Phase = "wait" | "count" | "play" | "rend" | "mend";
 
 /** C→S: sampled input bitmask + monotonically increasing sequence. */
 export interface InputMsg {
@@ -24,15 +31,23 @@ export interface WelcomeMsg {
 /**
  * S→C: authoritative world state at `tick`. `ack` is the last input seq the
  * server processed for each player id (used by that player's prediction).
+ * `left` counts down ticks remaining in the active phase (absent in wait/play)
+ * and `win` is the round/match winner id (-1 for a drawn round).
  */
 export interface SnapshotMsg {
   t: "snapshot";
   tick: number;
   ack: Record<number, number>;
   ps: PlayerSnapshot[];
+  ph: Phase;
+  left?: number;
+  win: number;
+  pip: Record<number, number>;
+  gs: GunSnapshot[];
+  bs: BulletSnapshot[];
 }
 
-/** [id, x, y, vx, vy, facing(-1|1), onGround, jumpHeld] */
+/** [id, x, y, vx, vy, facing(-1|1), onGround, jumpHeld, alive, armed, ammo] */
 export type PlayerSnapshot = [
   id: number,
   x: number,
@@ -42,7 +57,16 @@ export type PlayerSnapshot = [
   facing: -1 | 1,
   onGround: 0 | 1,
   jumpHeld: 0 | 1,
+  alive: 0 | 1,
+  armed: 0 | 1,
+  ammo: number,
 ];
+
+/** [id, x, y] — gun lying on the ground, waiting for pickup. */
+export type GunSnapshot = [id: number, x: number, y: number];
+
+/** [id, x, y, vx, vy] */
+export type BulletSnapshot = [id: number, x: number, y: number, vx: number, vy: number];
 
 export type ClientMsg = InputMsg;
 export type ServerMsg = WelcomeMsg | SnapshotMsg;
