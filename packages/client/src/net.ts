@@ -13,9 +13,13 @@ export class NetClient {
   private lastActiveSeq = -1_000_000;
   // ?flood=1 forces per-step sends for A/B testing.
   private readonly flood: boolean;
+  private readonly host?: string;
+  private readonly port?: string;
 
-  constructor(opts: { flood?: boolean } = {}) {
+  constructor(opts: { flood?: boolean; host?: string; port?: string } = {}) {
     this.flood = opts.flood ?? false;
+    this.host = opts.host;
+    this.port = opts.port;
   }
 
   onWelcome: ((msg: WelcomeMsg) => void) | null = null;
@@ -29,7 +33,7 @@ export class NetClient {
     this.lastSentSeq = -1_000_000;
     this.lastActiveSeq = -1_000_000;
     this.onStatus?.("connecting");
-    const ws = new WebSocket(wsUrl());
+    const ws = new WebSocket(wsUrl(this.host, this.port));
     this.ws = ws;
 
     ws.onopen = () => this.onStatus?.("open");
@@ -87,9 +91,9 @@ export class NetClient {
   }
 }
 
-function wsUrl(): string {
+function wsUrl(host?: string, port?: string): string {
   const params = new URLSearchParams(window.location.search);
-  const host = params.get("host") ?? window.location.hostname;
-  const port = params.get("port") ?? "8080";
-  return `ws://${host}:${port}`;
+  const h = host ?? params.get("host") ?? window.location.hostname;
+  const p = port ?? params.get("port") ?? "8080";
+  return `ws://${h}:${p}`;
 }

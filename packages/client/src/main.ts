@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { GAME_HEIGHT, GAME_WIDTH } from "@jumpshot/shared";
 import { BootScene } from "./scenes/BootScene";
+import { MenuScene } from "./scenes/MenuScene";
 import { GameScene } from "./scenes/GameScene";
 
 const params = new URLSearchParams(window.location.search);
@@ -17,7 +18,7 @@ const game = new Phaser.Game({
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
-  scene: [BootScene, GameScene],
+  scene: [BootScene, MenuScene, GameScene],
 });
 
 declare global {

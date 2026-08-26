@@ -12,7 +12,7 @@ See [PLAN.md](./PLAN.md) for the full design and roadmap.
 | M0 local shell   | ✅ done |
 | M1 netplay       | ✅ done |
 | M2 combat        | ✅ done |
-| M3 polish        | ⬜ not started |
+| M3 polish        | ✅ done |
 
 M0: controllable square on a static platform map, rendered from shared level
 data.
@@ -27,6 +27,15 @@ integration so they can't tunnel through walls. 1 life per round, round ends
 on a death (simultaneous kill = draw + replay), first to 2 wins takes the
 match — countdown/round-end/match-end phases drive a scoreboard overlay and
 HUD round pips.
+
+M3: connection menu before play, Pixel Adventure character sprites + anims
+(idle/run/jump/fall/dead) on a tile-art terrain, Kenney CC0 sound effects
+(fire/jump/pickup/death-beeps/win), and game juice — muzzle flashes, death
+particle bursts + camera shake, gun-spawn pops, squash-and-stretch. `M` mutes.
+
+Art credits: characters + terrain tiles from [Pixel Frog's Pixel Adventure 1](https://pixelfrog-assets.itch.io/pixel-adventure-1)
+(free for commercial/noncommercial use); audio from [Kenney](https://kenney.nl)
+audio packs (CC0).
 
 ## Run
 
@@ -63,6 +72,8 @@ the server is hosted behind `wss://` (see M4 in [PLAN.md](./PLAN.md)).
 
 - Move: `A`/`D` or `←`/`→`
 - Jump: `Space`, `W`, or `↑` (release early = shorter jump)
+- Fire: `Space` or click
+- Mute: `M`
 
 ## Layout
 
