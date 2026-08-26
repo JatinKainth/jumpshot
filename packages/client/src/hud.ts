@@ -1,22 +1,8 @@
+/** ?debug overlay — the only DOM HUD element; all gameplay text is Phaser. */
 export class Hud {
-  private el: HTMLDivElement;
   private dbgEl: HTMLDivElement;
 
   constructor() {
-    this.el = document.createElement("div");
-    const s = this.el.style;
-    s.position = "fixed";
-    s.display = "none";
-    s.font = "bold 14px ui-monospace, Menlo, monospace";
-    s.color = "#94b0c2";
-    s.background = "rgba(13, 14, 21, 0.75)";
-    s.padding = "4px 8px";
-    s.borderRadius = "4px";
-    s.pointerEvents = "none";
-    s.whiteSpace = "pre";
-    s.zIndex = "10";
-    document.body.appendChild(this.el);
-
     this.dbgEl = document.createElement("div");
     const d = this.dbgEl.style;
     d.position = "fixed";
@@ -30,16 +16,6 @@ export class Hud {
     d.whiteSpace = "pre";
     d.zIndex = "10";
     document.body.appendChild(this.dbgEl);
-  }
-
-  set(text: string): void {
-    this.el.textContent = text;
-    this.el.style.display = text ? "block" : "none";
-    const canvas = document.querySelector("canvas");
-    if (!canvas || !text) return;
-    const r = canvas.getBoundingClientRect();
-    this.el.style.left = `${Math.round(r.left + 12)}px`;
-    this.el.style.top = `${Math.round(r.top + 10)}px`;
   }
 
   debug(text: string): void {

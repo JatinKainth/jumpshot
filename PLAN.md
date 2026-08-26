@@ -12,7 +12,7 @@ the match (best of 3).
 | Server  | Node-compatible TS authoritative server (`ws`)      |
 | Shared  | `@jumpshot/shared` — types, constants, map data          |
 | Tooling | bun workspaces monorepo                             |
-| Art     | Placeholder generated textures → Kenney pack later  |
+| Art     | Pixel Adventure 1 (Pixel Frog) + Kenney audio, both free/CC0 |
 
 ## Architecture
 
@@ -65,8 +65,9 @@ All screens are data-driven off registries (`LEVELS`, future `CHARACTERS`,
       protocol, interpolation; see the other player move and jump.
 - [x] **M2 – combat**: gun spawner (3s cadence, cap 3), pickup, bullets,
       kills, round/match FSM, HUD score.
-- [ ] **M3 – polish**: menu/lobby/selector screens, sprites + animations
-      (Kenney), sound, juice.
+- [x] **M3 – polish**: client-only connection menu (char select deferred),
+      Pixel Adventure character art + animations, terrain tiles, Kenney CC0
+      sfx, juice (particles/shake/squash-stretch).
 - [ ] **M4+ backlog**: more guns/characters/levels, gamepads, mDNS discovery
       (no IP typing), hosted server for internet play.
 

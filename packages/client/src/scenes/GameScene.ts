@@ -9,6 +9,7 @@ import {
   STEP_DT,
   TICK_RATE_HZ,
   TILE_SIZE,
+  PLAYER_SIZE,
   WINS_TO_TAKE_MATCH,
   Sim,
   parseLevel,
@@ -22,6 +23,11 @@ import type {
 } from "@jumpshot/shared";
 import { Hud } from "../hud";
 import { NetClient } from "../net";
+import { TEX } from "../assets";
+import { Sfx } from "../audio";
+import { Fx } from "../fx";
+import { PlayerView } from "../playerView";
+import { lastConnection } from "./MenuScene";
 
 interface InputSample {
   seq: number;
@@ -45,26 +51,41 @@ interface TrackedEntity {
   recvAt: number;
 }
 
+interface RemotePose {
+  x: number;
+  y: number;
+  facing: -1 | 1;
+  vx: number;
+  vy: number;
+  onGround: boolean;
+  starveMs: number;
+}
+
 const STEP_MS = STEP_DT * 1000;
 const HISTORY_CAP = TICK_RATE_HZ * 3;
 // Bump when netcode-relevant client logic changes; shown in the debug HUD so
 // a stale page (missed vite reload) is obvious during testing.
-const NET_REV = "m2-combat.1";
+const NET_REV = "m3-polish.1";
 // Dead-reckon at most this far past the newest snapshot when the interp window
 // starves (jitter, GC pauses) instead of freezing the remote sprite on it.
 const EXTRAP_MAX_MS = 100;
+// Terrain sheet frames (Pixel Adventure 1, 16px tiles in a 22-col grid,
+// index = row*22+col). Likely needs a visual tweak after eyeballing in game.
+const TERRAIN_COLS = 22;
+const TERRAIN_TOP_FRAME = 0 * TERRAIN_COLS + 0;
+const TERRAIN_FILL_FRAME = 1 * TERRAIN_COLS + 0;
+// Corpse lingers through its hit anim before being hidden.
+const DEATH_HIDE_MS = 500;
+const PLAYER_TINTS = [0xe43b44, 0x2ce8f5];
 
 export class GameScene extends Phaser.Scene {
   private sim!: Sim;
-  private net = new NetClient({
-    flood: new URLSearchParams(window.location.search).has("flood"),
-  });
+  private net!: NetClient;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private keysWASD!: Record<"W" | "A" | "D", Phaser.Input.Keyboard.Key>;
 
   private myId: number | null = null;
   private local: PlayerState | null = null;
-  private localSprite: Phaser.GameObjects.Image | null = null;
   private visualOffset = { x: 0, y: 0 };
 
   private history: InputSample[] = [];
@@ -73,11 +94,17 @@ export class GameScene extends Phaser.Scene {
   private lastFrameTime = 0;
 
   private remotes = new Map<number, Remote>();
-  private sprites = new Map<number, Phaser.GameObjects.Image>();
+  private views = new Map<number, PlayerView>();
+  /** Last observed alive flag per id; absent = never seen (no death fx yet). */
+  private aliveKnown = new Map<number, boolean>();
+  private deathHide = new Map<number, Phaser.Time.TimerEvent>();
   private hud = new Hud();
+  private fx!: Fx;
+  private sfx!: Sfx;
 
   // --- M2 combat state (all mirrored off snapshots) ---
   private phase: Phase = "wait";
+  private prevPhase: Phase = "wait";
   private phaseLeftTicks = 0;
   private winner = -1;
   private pips: Record<number, number> = {};
@@ -86,13 +113,17 @@ export class GameScene extends Phaser.Scene {
   /** Local ammo estimate, decremented per trigger pull, resynced per snapshot. */
   private iAmAmmo = 0;
   private lastPredictFireAt = -Infinity;
+  private lastCountSec = -1;
   private gunSprites = new Map<number, Phaser.GameObjects.Image>();
   private bulletSprites = new Map<number, Phaser.GameObjects.Image>();
   private bulletBuf = new Map<number, TrackedEntity>();
   private centerText!: Phaser.GameObjects.Text;
+  private statusText!: Phaser.GameObjects.Text;
   private pipText!: Phaser.GameObjects.Text;
   private ammoText!: Phaser.GameObjects.Text;
+  private toastText!: Phaser.GameObjects.Text;
 
+  private readonly flood = new URLSearchParams(window.location.search).has("flood");
   private readonly debug = new URLSearchParams(window.location.search).has("debug");
   private readonly traceEnabled = new URLSearchParams(window.location.search).has("trace");
   private dbg = {
@@ -127,12 +158,10 @@ export class GameScene extends Phaser.Scene {
     const level = parseLevel(LEVELS[0]!);
     this.sim = new Sim(level);
     this.cameras.main.setBounds(0, 0, level.widthPx, level.heightPx);
+    this.fx = new Fx(this);
+    this.sfx = new Sfx(this);
 
-    for (const s of level.solids) {
-      for (let x = s.x; x < s.x + s.w; x += TILE_SIZE) {
-        this.add.image(x + 8, s.y + 8, "tile");
-      }
-    }
+    this.renderTerrain(level);
 
     const style: Phaser.Types.GameObjects.Text.TextStyle = {
       fontFamily: "ui-monospace, Menlo, monospace",
@@ -144,6 +173,10 @@ export class GameScene extends Phaser.Scene {
       .text(GAME_WIDTH / 2, 110, "", { ...style, fontSize: "24px" })
       .setOrigin(0.5, 0.5)
       .setResolution(2);
+    this.statusText = this.add
+      .text(GAME_WIDTH / 2, 26, "", { ...style, fontSize: "12px", color: "#94b0c2" })
+      .setOrigin(0.5, 0.5)
+      .setResolution(2);
     this.pipText = this.add
       .text(GAME_WIDTH / 2, 5, "", { ...style, fontSize: "12px" })
       .setOrigin(0.5, 0)
@@ -152,18 +185,33 @@ export class GameScene extends Phaser.Scene {
       .text(8, GAME_HEIGHT - 18, "", { ...style, fontSize: "12px" })
       .setOrigin(0, 1)
       .setResolution(2);
+    this.toastText = this.add
+      .text(GAME_WIDTH / 2, 44, "", { ...style, fontSize: "12px" })
+      .setOrigin(0.5, 0.5)
+      .setResolution(2);
 
-    this.hud.set("connecting…");
+    this.setStatus("connecting…");
 
     this.cursors = this.input.keyboard!.createCursorKeys();
     this.keysWASD = this.input.keyboard!.addKeys("W,A,D") as Record<
       "W" | "A" | "D",
       Phaser.Input.Keyboard.Key
     >;
+    this.input.keyboard!.on("keydown-M", () => {
+      this.toast(this.sfx.toggleMute() ? "MUTED" : "SOUND ON");
+    });
 
+    // Menu-entered connection beats URL params; NetClient falls back itself
+    // when the menu hasn't run (e.g. direct GameScene testing).
+    const conn = lastConnection();
+    this.net = new NetClient({
+      flood: this.flood,
+      host: conn?.host,
+      port: conn?.port,
+    });
     this.net.onStatus = (status) => {
       if (status === "open") return;
-      this.hud.set(
+      this.setStatus(
         status === "connecting"
           ? "connecting…"
           : status === "full"
@@ -179,24 +227,51 @@ export class GameScene extends Phaser.Scene {
       this.history.length = 0;
       this.visualOffset.x = 0;
       this.visualOffset.y = 0;
+      this.resetAliveTracking();
       const mine = msg.ps.find((p) => p[0] === msg.id);
       if (mine) {
         this.local = snapshotToState(mine);
         this.iAmAlive = mine[8] === 1;
         this.iAmArmed = mine[9] === 1;
         this.iAmAmmo = mine[10];
-        this.localSprite = this.ensureSprite(msg.id);
       }
       for (const p of msg.ps) {
         if (p[0] !== msg.id) this.pushRemoteSample(p[0], p);
       }
-      this.hud.set("");
+      this.trackAlive(msg.id, this.iAmAlive);
+      this.setStatus("");
     };
     this.net.onSnapshot = (msg) => this.applySnapshot(msg);
     this.net.connect();
 
     (window as unknown as { __jumpshot?: GameScene }).__jumpshot = this;
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.net.destroy());
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.net.destroy();
+      for (const view of this.views.values()) view.destroy();
+      this.views.clear();
+    });
+  }
+
+  /** Grass-top tiles where exposed to air above, dirt fill elsewhere. */
+  private renderTerrain(level: ReturnType<typeof parseLevel>): void {
+    const solidAt = (px: number, py: number) =>
+      level.solids.some(
+        (s) => px >= s.x && px < s.x + s.w && py >= s.y && py < s.y + s.h,
+      );
+    for (const s of level.solids) {
+      for (let y = s.y; y < s.y + s.h; y += TILE_SIZE) {
+        for (let x = s.x; x < s.x + s.w; x += TILE_SIZE) {
+          const exposedTop = !solidAt(x + TILE_SIZE / 2, y - TILE_SIZE / 2);
+          this.add
+            .image(
+              x + TILE_SIZE / 2,
+              y + TILE_SIZE / 2,
+              TEX.terrain.key,
+            )
+            .setFrame(exposedTop ? TERRAIN_TOP_FRAME : TERRAIN_FILL_FRAME);
+        }
+      }
+    }
   }
 
   update(time: number, delta: number): void {
@@ -260,19 +335,12 @@ export class GameScene extends Phaser.Scene {
     this.lastPredictFireAt = time;
     this.iAmAmmo--;
     this.updateAmmoHud();
-    const flash = this.add.image(
+    this.fx.muzzleFlash(
       this.local.x + this.local.facing * MUZZLE_OFFSET_PX,
       this.local.y,
-      "flash",
+      this.local.facing,
     );
-    this.tweens.add({
-      targets: flash,
-      alpha: 0,
-      scaleX: 1.8,
-      scaleY: 1.8,
-      duration: 90,
-      onComplete: () => flash.destroy(),
-    });
+    this.sfx.play("fire", { volume: 0.7 });
   }
 
   private flushDebug(time: number, delta: number): void {
@@ -304,8 +372,14 @@ export class GameScene extends Phaser.Scene {
 
   private predictStep(bits: number): void {
     if (!this.local || this.myId === null) return;
+    const wasGrounded = this.local.onGround;
     const seq = this.nextSeq++;
     this.sim.step(this.local, bits);
+    // Jump sfx keys off leaving the ground with the jump bit held — walking
+    // off a ledge without the bit stays silent.
+    if (wasGrounded && !this.local.onGround && bits & INPUT.JUMP) {
+      this.sfx.play("jump", { volume: 0.5 });
+    }
     this.history.push({ seq, bits });
     if (this.history.length > HISTORY_CAP) this.history.shift();
     this.net.sendInput(seq, bits);
@@ -336,8 +410,11 @@ export class GameScene extends Phaser.Scene {
     for (const id of [...this.remotes.keys()]) {
       if (!seen.has(id)) {
         this.remotes.delete(id);
-        this.sprites.get(id)?.destroy();
-        this.sprites.delete(id);
+        this.views.get(id)?.destroy();
+        this.views.delete(id);
+        this.aliveKnown.delete(id);
+        this.deathHide.get(id)?.remove();
+        this.deathHide.delete(id);
       }
     }
     this.syncGuns(msg.gs);
@@ -350,15 +427,21 @@ export class GameScene extends Phaser.Scene {
    * state in one place.
    */
   private syncWorldUi(): void {
-    this.hud.set(this.phase === "wait" ? "waiting for player 2…" : "");
+    this.setStatus(this.phase === "wait" ? "waiting for player 2…" : "");
     this.pipText.setText(this.pipsText());
     switch (this.phase) {
       case "wait":
         this.centerText.setText("");
         break;
-      case "count":
-        this.centerText.setText(String(Math.ceil(this.phaseLeftTicks / TICK_RATE_HZ)));
+      case "count": {
+        const secs = Math.ceil(this.phaseLeftTicks / TICK_RATE_HZ);
+        this.centerText.setText(String(secs));
+        if (secs !== this.lastCountSec) {
+          this.lastCountSec = secs;
+          this.sfx.play("beep");
+        }
         break;
+      }
       case "play":
         this.centerText.setText("");
         break;
@@ -371,7 +454,17 @@ export class GameScene extends Phaser.Scene {
         this.centerText.setText(`PLAYER ${(this.winner ?? 0) + 1} WINS THE MATCH`);
         break;
     }
+    if (this.prevPhase !== this.phase) {
+      if ((this.phase === "rend" || this.phase === "mend") && this.winner >= 0) {
+        this.sfx.play("win");
+      }
+      this.prevPhase = this.phase;
+    }
     this.updateAmmoHud();
+  }
+
+  private setStatus(text: string): void {
+    this.statusText.setText(text);
   }
 
   private pipsText(): string {
@@ -389,6 +482,17 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
+  private toast(msg: string): void {
+    this.tweens.killTweensOf(this.toastText);
+    this.toastText.setText(msg).setAlpha(1);
+    this.tweens.add({
+      targets: this.toastText,
+      alpha: 0,
+      delay: 500,
+      duration: 600,
+    });
+  }
+
   private syncGuns(gs: SnapshotMsg["gs"]): void {
     const seen = new Set<number>();
     for (const [id, x, y] of gs) {
@@ -397,6 +501,7 @@ export class GameScene extends Phaser.Scene {
       if (!sprite) {
         sprite = this.add.image(x, y, "gun");
         this.gunSprites.set(id, sprite);
+        this.fx.spawnPop(x, y);
       }
       sprite.setPosition(x, y);
     }
@@ -428,11 +533,16 @@ export class GameScene extends Phaser.Scene {
 
   private reconcile(snap: PlayerSnapshot, ackedSeq: number): void {
     this.iAmAlive = snap[8] === 1;
+    const wasArmed = this.iAmArmed;
     this.iAmArmed = snap[9] === 1;
     this.iAmAmmo = snap[10];
+    if (!wasArmed && this.iAmArmed && this.local) {
+      this.fx.pickupPulse(this.local.x, this.local.y);
+      this.sfx.play("pickup");
+    }
+    this.trackAlive(snap[0], this.iAmAlive);
     if (!this.local) {
       this.local = snapshotToState(snap);
-      this.localSprite ??= this.ensureSprite(snap[0]);
       return;
     }
     const corrected = snapshotToState(snap);
@@ -468,6 +578,49 @@ export class GameScene extends Phaser.Scene {
     this.updateAmmoHud();
   }
 
+  /**
+   * Death/respawn presentation keyed off alive-flag transitions. Players seen
+   * for the first time (welcome/reconnect) never burst — only an observed
+   * true→false flip counts as a kill worth presenting.
+   */
+  private trackAlive(id: number, alive: boolean): void {
+    const prev = this.aliveKnown.get(id);
+    this.aliveKnown.set(id, alive);
+    const view = this.ensureView(id);
+    if (!alive) {
+      if (prev === true) {
+        // Burst at the hitbox center; the view anchors its sprite at the feet.
+        const x = view.sprite.x;
+        const y = view.sprite.y - PLAYER_SIZE / 2;
+        this.fx.deathBurst(x, y, PLAYER_TINTS[id] ?? 0xffffff);
+        this.sfx.play("death");
+        if (id === this.myId) this.fx.shake();
+        this.deathHide.get(id)?.remove();
+        this.deathHide.set(
+          id,
+          this.time.delayedCall(DEATH_HIDE_MS, () => view.sprite.setVisible(false)),
+        );
+      } else if (prev === undefined) {
+        // Arrived already-dead (reconnect mid-round): no kill to present.
+        view.sprite.setVisible(false);
+      }
+      return;
+    }
+    if (prev === false) {
+      this.deathHide.get(id)?.remove();
+      this.deathHide.delete(id);
+      view.sprite.setVisible(true);
+    }
+  }
+
+  /** Reconnect resets everyone: fresh welcome snapshots must count as first sight. */
+  private resetAliveTracking(): void {
+    this.aliveKnown.clear();
+    for (const t of this.deathHide.values()) t.remove();
+    this.deathHide.clear();
+    for (const view of this.views.values()) view.sprite.setVisible(true);
+  }
+
   private pushRemoteSample(id: number, snap: PlayerSnapshot): void {
     let remote = this.remotes.get(id);
     if (!remote) {
@@ -475,18 +628,18 @@ export class GameScene extends Phaser.Scene {
       this.remotes.set(id, remote);
     }
     remote.alive = snap[8] === 1;
+    this.trackAlive(id, remote.alive);
     remote.buffer.push({ recvAt: performance.now(), snap });
     if (remote.buffer.length > 30) remote.buffer.shift();
-    this.ensureSprite(id);
   }
 
-  private ensureSprite(id: number): Phaser.GameObjects.Image {
-    let sprite = this.sprites.get(id);
-    if (!sprite) {
-      sprite = this.add.image(-100, -100, id === 0 ? "player" : "player2");
-      this.sprites.set(id, sprite);
+  private ensureView(id: number): PlayerView {
+    let view = this.views.get(id);
+    if (!view) {
+      view = new PlayerView(this, id === 0 ? 0 : 1);
+      this.views.set(id, view);
     }
-    return sprite;
+    return view;
   }
 
   private decayVisualOffset(dtSec: number): void {
@@ -498,31 +651,36 @@ export class GameScene extends Phaser.Scene {
   }
 
   private render(time: number): void {
-    if (this.localSprite) {
-      this.localSprite.setVisible(this.iAmAlive);
-      if (this.local && this.iAmAlive) {
-        this.localSprite.setPosition(
-          this.local.x + this.visualOffset.x,
-          this.local.y + this.visualOffset.y,
-        );
-        this.localSprite.setFlipX(this.local.facing < 0);
-      }
+    if (this.local && this.myId !== null) {
+      this.ensureView(this.myId).sync(
+        this.local.x + this.visualOffset.x,
+        this.local.y + this.visualOffset.y,
+        this.local.facing,
+        this.iAmAlive,
+        this.local.onGround,
+        this.local.vx,
+        this.local.vy,
+      );
     }
     const renderAt = performance.now() - INTERP_DELAY_MS;
     for (const [id, remote] of this.remotes) {
-      const sprite = this.sprites.get(id)!;
-      sprite.setVisible(remote.alive);
-      if (!remote.alive) continue;
-      const pos = interpolate(remote.buffer, renderAt);
-      if (pos.starveMs > 0) {
-        this.dbg.starveMs = pos.starveMs;
+      const pose = interpolate(remote.buffer, renderAt);
+      if (pose.starveMs > 0) {
+        this.dbg.starveMs = pose.starveMs;
         this.dbg.starves++;
-        if (pos.starveMs > this.dbg.maxStarveMs) this.dbg.maxStarveMs = pos.starveMs;
+        if (pose.starveMs > this.dbg.maxStarveMs) this.dbg.maxStarveMs = pose.starveMs;
       } else {
         this.dbg.starveMs = 0;
       }
-      sprite.setPosition(pos.x, pos.y);
-      sprite.setFlipX(pos.facing < 0);
+      this.ensureView(id).sync(
+        pose.x,
+        pose.y,
+        pose.facing,
+        remote.alive,
+        pose.onGround,
+        pose.vx,
+        pose.vy,
+      );
     }
     for (const [id, b] of this.bulletBuf) {
       const sprite = this.bulletSprites.get(id);
@@ -546,12 +704,11 @@ function snapshotToState(p: PlayerSnapshot): PlayerState {
   };
 }
 
-function interpolate(
-  buffer: RemoteSample[],
-  renderAt: number,
-): { x: number; y: number; facing: -1 | 1; starveMs: number } {
+function interpolate(buffer: RemoteSample[], renderAt: number): RemotePose {
   const last = buffer[buffer.length - 1];
-  if (!last) return { x: -100, y: -100, facing: 1, starveMs: 0 };
+  if (!last) {
+    return { x: -100, y: -100, facing: 1, vx: 0, vy: 0, onGround: true, starveMs: 0 };
+  }
   if (buffer.length < 2 || renderAt >= last.recvAt) {
     // Past the newest sample: project briefly on its velocity rather than
     // freeze on it, so jitter can't stall the remote sprite.
@@ -562,6 +719,9 @@ function interpolate(
       x: s[1] + s[3] * (dtMs / 1000),
       y: s[2] + s[4] * (dtMs / 1000),
       facing: s[5],
+      vx: s[3],
+      vy: s[4],
+      onGround: s[6] === 1,
       starveMs: dtMs,
     };
   }
@@ -574,10 +734,21 @@ function interpolate(
         x: a.snap[1] + (b.snap[1] - a.snap[1]) * t,
         y: a.snap[2] + (b.snap[2] - a.snap[2]) * t,
         facing: b.snap[5],
+        vx: b.snap[3],
+        vy: b.snap[4],
+        onGround: b.snap[6] === 1,
         starveMs: 0,
       };
     }
   }
   const first = buffer[0]!;
-  return { x: first.snap[1], y: first.snap[2], facing: first.snap[5], starveMs: 0 };
+  return {
+    x: first.snap[1],
+    y: first.snap[2],
+    facing: first.snap[5],
+    vx: first.snap[3],
+    vy: first.snap[4],
+    onGround: first.snap[6] === 1,
+    starveMs: 0,
+  };
 }
