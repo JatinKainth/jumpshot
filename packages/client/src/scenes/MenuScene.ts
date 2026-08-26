@@ -4,14 +4,21 @@ import { GAME_HEIGHT, GAME_WIDTH } from "@jumpshot/shared";
 const HOST_KEY = "jumpshot.host";
 const PORT_KEY = "jumpshot.port";
 
+// URL params win over localStorage so ?host=/?port= stay usable after a
+// session has saved values.
 export function lastConnection(): { host: string; port: string } | null {
-  const host = localStorage.getItem(HOST_KEY);
-  const port = localStorage.getItem(PORT_KEY);
+  const params = new URLSearchParams(window.location.search);
+  const host = params.get("host") ?? localStorage.getItem(HOST_KEY);
+  const port = params.get("port") ?? localStorage.getItem(PORT_KEY);
   return host && port ? { host, port } : null;
 }
 
 function initialInput(urlKey: string, storageKey: string, fallback: string): string {
-  return localStorage.getItem(storageKey) ?? new URLSearchParams(window.location.search).get(urlKey) ?? fallback;
+  return (
+    new URLSearchParams(window.location.search).get(urlKey) ??
+    localStorage.getItem(storageKey) ??
+    fallback
+  );
 }
 
 export class MenuScene extends Phaser.Scene {
@@ -66,12 +73,20 @@ export class MenuScene extends Phaser.Scene {
     document.body.appendChild(panel);
     this.els.push(panel);
 
+    // Scale.FIT recenters the canvas on resize, so the panel must follow.
     const canvas = document.querySelector("canvas");
     if (canvas) {
-      const r = canvas.getBoundingClientRect();
-      s.left = `${Math.round(r.left + r.width / 2)}px`;
-      s.top = `${Math.round(r.top + r.height * 0.42)}px`;
-      s.transform = "translateX(-50%)";
+      const position = () => {
+        const r = canvas!.getBoundingClientRect();
+        s.left = `${Math.round(r.left + r.width / 2)}px`;
+        s.top = `${Math.round(r.top + r.height * 0.42)}px`;
+        s.transform = "translateX(-50%)";
+      };
+      position();
+      window.addEventListener("resize", position);
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        window.removeEventListener("resize", position);
+      });
     }
 
     const play = () => {

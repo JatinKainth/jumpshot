@@ -593,6 +593,7 @@ export class GameScene extends Phaser.Scene {
         const x = view.sprite.x;
         const y = view.sprite.y - PLAYER_SIZE / 2;
         this.fx.deathBurst(x, y, PLAYER_TINTS[id] ?? 0xffffff);
+        this.sfx.play("death");
         if (id === this.myId) this.fx.shake();
         this.deathHide.get(id)?.remove();
         this.deathHide.set(
@@ -627,9 +628,9 @@ export class GameScene extends Phaser.Scene {
       this.remotes.set(id, remote);
     }
     remote.alive = snap[8] === 1;
+    this.trackAlive(id, remote.alive);
     remote.buffer.push({ recvAt: performance.now(), snap });
     if (remote.buffer.length > 30) remote.buffer.shift();
-    this.ensureView(id);
   }
 
   private ensureView(id: number): PlayerView {

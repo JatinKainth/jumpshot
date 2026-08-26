@@ -13,7 +13,6 @@ const RING_KEY = "fx-ring";
  */
 export class Fx {
   private scene: Phaser.Scene;
-  private shakeActive = false;
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
@@ -107,14 +106,9 @@ export class Fx {
   }
 
   shake(intensity = 0.004, durMs = 150): void {
-    const cam = this.scene.cameras.main;
-    // Reset instead of stacking concurrent shakes.
-    if (this.shakeActive) cam.shake(0, 0);
-    this.shakeActive = true;
-    cam.shake(durMs, intensity, true);
-    cam.once(Phaser.Cameras.Scene2D.Events.SHAKE_COMPLETE, () => {
-      this.shakeActive = false;
-    });
+    // force=true replaces any in-flight shake; the camera owns the effect
+    // lifecycle, so restarting can never strand a stale completion listener.
+    this.scene.cameras.main.shake(durMs, intensity, true);
   }
 
   private burst(
