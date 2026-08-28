@@ -6,7 +6,8 @@ COPY packages ./packages
 
 RUN bun install --frozen-lockfile
 
-# Production stage — drop devDependencies, keep lockfile-consistent context
+# Production stage — keep client for lockfile resolution but drop it after
+# install so the Fly image doesn't ship phaser/vite (client runtime deps).
 FROM oven/bun:1
 WORKDIR /app
 
@@ -15,7 +16,7 @@ COPY --from=base /app/packages/shared ./packages/shared
 COPY --from=base /app/packages/server ./packages/server
 COPY --from=base /app/packages/client ./packages/client
 
-RUN bun install --production --frozen-lockfile
+RUN bun install --production --frozen-lockfile && rm -rf packages/client
 
 ENV NODE_ENV=production
 ENV PORT=8080

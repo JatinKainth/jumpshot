@@ -124,11 +124,16 @@ function wsUrl(host?: string, port?: string): string {
       : window.location.protocol === "https:";
 
   if (p === null || p === "") {
-    // No explicit port (or explicit empty meaning "use protocol default"):
-    // don't reuse Vite's 5173 — the WS server is on 8080 (see vite.config.ts:7,
-    // server package.json:9). Reuse page port only when it's not 5173.
-    if (h === window.location.hostname && window.location.port && window.location.port !== "5173") {
-      p = window.location.port;
+    // No explicit port (or explicit empty meaning "use protocol default").
+    // For ws: always use the server port (8080) — even if vite moves from 5173
+    // (vite.config.ts:7) the WS server stays on 8080. For wss: reuse the page
+    // port when same-host (hosted behind same origin), otherwise omit => 443.
+    const sameHost = h === window.location.hostname;
+    const pagePort = window.location.port;
+    if (secure && sameHost && pagePort) {
+      p = pagePort;
+    } else if (sameHost) {
+      p = "8080";
     } else {
       p = secure ? "" : "8080";
     }
