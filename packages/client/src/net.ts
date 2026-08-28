@@ -94,15 +94,20 @@ export class NetClient {
 function wsUrl(host?: string, port?: string): string {
   const params = new URLSearchParams(window.location.search);
   let h = host ?? params.get("host") ?? window.location.hostname;
-  let p = port ?? params.get("port") ?? null;
+  const rawPort = port ?? params.get("port") ?? null;
+  let p: string | null = rawPort;
 
   // Allow ?host=wss://example.com or ws://example.com (or with path/port).
+  // Explicit ?port overrides host-embedded port (unlike the previous guard).
   if (h.startsWith("ws://") || h.startsWith("wss://")) {
-    if (p && !/:\d+(\/|$)/.test(h)) {
+    if (p !== null) {
       try {
         const u = new URL(h);
         u.port = p;
-        // URL.toString() always adds trailing slash — strip it if original had none.
+        // Omit default ports (wss:443, ws:80) for canonical URLs.
+        if ((u.protocol === "wss:" && u.port === "443") || (u.protocol === "ws:" && u.port === "80")) {
+          u.port = "";
+        }
         const raw = u.toString();
         return h.endsWith("/") ? raw : raw.replace(/\/$/, "");
       } catch {
@@ -115,13 +120,14 @@ function wsUrl(host?: string, port?: string): string {
   const secureParam = params.get("secure") ?? params.get("wss") ?? params.get("tls");
   const secure =
     secureParam !== null
-      ? secureParam !== "0" && secureParam !== "false"
+      ? secureParam === "" || (secureParam !== "0" && secureParam.toLowerCase() !== "false")
       : window.location.protocol === "https:";
 
-  if (p === null) {
-    // No explicit port: same-host dev keeps the page's port, otherwise
-    // default to 8080 for ws:// and omit (443) for wss://.
-    if (h === window.location.hostname && window.location.port) {
+  if (p === null || p === "") {
+    // No explicit port (or explicit empty meaning "use protocol default"):
+    // don't reuse Vite's 5173 — the WS server is on 8080 (see vite.config.ts:7,
+    // server package.json:9). Reuse page port only when it's not 5173.
+    if (h === window.location.hostname && window.location.port && window.location.port !== "5173") {
       p = window.location.port;
     } else {
       p = secure ? "" : "8080";
@@ -129,5 +135,7 @@ function wsUrl(host?: string, port?: string): string {
   }
 
   const scheme = secure ? "wss" : "ws";
+  // Omit default ports for canonical form.
+  if ((scheme === "wss" && p === "443") || (scheme === "ws" && p === "80")) p = "";
   return p ? `${scheme}://${h}:${p}` : `${scheme}://${h}`;
 }

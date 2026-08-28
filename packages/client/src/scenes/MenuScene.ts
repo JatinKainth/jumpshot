@@ -95,7 +95,8 @@ export class MenuScene extends Phaser.Scene {
       const port = portInput.value.trim();
       if (!host) return;
       localStorage.setItem(HOST_KEY, host);
-      localStorage.setItem(PORT_KEY, port);
+      if (port) localStorage.setItem(PORT_KEY, port);
+      else localStorage.removeItem(PORT_KEY);
       this.scene.start("GameScene");
     };
     playBtn.addEventListener("click", play);
