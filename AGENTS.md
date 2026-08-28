@@ -1,4 +1,4 @@
-# AGENT.md — jumpshot
+# AGENTS.md — jumpshot
 
 > Read this file at the start of every session. It replaces tribal knowledge — you should not need to ask the user for repo state.
 
