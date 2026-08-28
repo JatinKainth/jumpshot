@@ -93,7 +93,41 @@ export class NetClient {
 
 function wsUrl(host?: string, port?: string): string {
   const params = new URLSearchParams(window.location.search);
-  const h = host ?? params.get("host") ?? window.location.hostname;
-  const p = port ?? params.get("port") ?? "8080";
-  return `ws://${h}:${p}`;
+  let h = host ?? params.get("host") ?? window.location.hostname;
+  let p = port ?? params.get("port") ?? null;
+
+  // Allow ?host=wss://example.com or ws://example.com (or with path/port).
+  if (h.startsWith("ws://") || h.startsWith("wss://")) {
+    if (p && !/:\d+(\/|$)/.test(h)) {
+      try {
+        const u = new URL(h);
+        u.port = p;
+        // URL.toString() always adds trailing slash — strip it if original had none.
+        const raw = u.toString();
+        return h.endsWith("/") ? raw : raw.replace(/\/$/, "");
+      } catch {
+        return h;
+      }
+    }
+    return h;
+  }
+
+  const secureParam = params.get("secure") ?? params.get("wss") ?? params.get("tls");
+  const secure =
+    secureParam !== null
+      ? secureParam !== "0" && secureParam !== "false"
+      : window.location.protocol === "https:";
+
+  if (p === null) {
+    // No explicit port: same-host dev keeps the page's port, otherwise
+    // default to 8080 for ws:// and omit (443) for wss://.
+    if (h === window.location.hostname && window.location.port) {
+      p = window.location.port;
+    } else {
+      p = secure ? "" : "8080";
+    }
+  }
+
+  const scheme = secure ? "wss" : "ws";
+  return p ? `${scheme}://${h}:${p}` : `${scheme}://${h}`;
 }

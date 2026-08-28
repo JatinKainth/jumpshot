@@ -9,8 +9,8 @@ const PORT_KEY = "jumpshot.port";
 export function lastConnection(): { host: string; port: string } | null {
   const params = new URLSearchParams(window.location.search);
   const host = params.get("host") ?? localStorage.getItem(HOST_KEY);
-  const port = params.get("port") ?? localStorage.getItem(PORT_KEY);
-  return host && port ? { host, port } : null;
+  const port = params.get("port") ?? localStorage.getItem(PORT_KEY) ?? "";
+  return host ? { host, port } : null;
 }
 
 function initialInput(urlKey: string, storageKey: string, fallback: string): string {
@@ -39,8 +39,9 @@ export class MenuScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
+    const defaultPort = window.location.protocol === "https:" ? "" : "8080";
     const hostInput = this.makeInput(initialInput("host", HOST_KEY, window.location.hostname));
-    const portInput = this.makeInput(initialInput("port", PORT_KEY, "8080"));
+    const portInput = this.makeInput(initialInput("port", PORT_KEY, defaultPort));
     const playBtn = document.createElement("button");
     playBtn.textContent = "PLAY";
     Object.assign(playBtn.style, {
@@ -92,7 +93,7 @@ export class MenuScene extends Phaser.Scene {
     const play = () => {
       const host = hostInput.value.trim();
       const port = portInput.value.trim();
-      if (!host || !port) return;
+      if (!host) return;
       localStorage.setItem(HOST_KEY, host);
       localStorage.setItem(PORT_KEY, port);
       this.scene.start("GameScene");

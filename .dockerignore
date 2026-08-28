@@ -1,0 +1,6 @@
+node_modules
+packages/client
+packages/shared/node_modules
+packages/server/node_modules
+.git
+dist
